@@ -9,6 +9,8 @@ import pathlib
 import shutil
 import os
 
+from makemkvkey import updateMakeMkvKey
+
 def log_subprocess_output(pipe):
     for line in iter(pipe.readline, b''): # b'\n'-separated lines
         logging.info('SUBPROCESS: %r', line.decode("utf-8"))
@@ -56,40 +58,67 @@ def parse_blkid(blkid_str: str) -> dict:
         blkid[blk] = params
     return blkid
 
-def rip_dvd(blkid_params: dict, drive: str, wip_root: str, out_root: str):
-    file_name = f"{blkid_params['LABEL']}-{blkid_params['UUID']}.mp4"
+def rip_dvd(
+        blkid_params: dict,
+        drive: str,
+        wip_root: str,
+        out_root: str,
+        makemkv_update_key: bool,
+        makemkv_settings_path: Optional[str] = None
+    ):
+    disc_name = f"{blkid_params['LABEL']}-{blkid_params['UUID']}.mp4"
     wip_dir_path = f"{wip_root}/dvd"
     out_dir_path = out_root
-    wip_path = f"{wip_dir_path}/{file_name}"
-    out_path = f"{out_dir_path}/{file_name}"
+    wip_path = f"{wip_dir_path}/{disc_name}"
+    out_path = f"{out_dir_path}/{disc_name}"
     
     # Check if output path exists
     if pathlib.Path(out_path).exists():
         logging.info(f"Output path exists: {out_path}")
         return
     
-    logging.info(f"Ripping DVD: {file_name}")
+    if makemkv_update_key:
+        updateMakeMkvKey(makemkv_settings_path)
     
-    os.makedirs(wip_dir_path, exist_ok=True)
-    os.makedirs(out_dir_path, exist_ok=True)
+    logging.info(f"Ripping DVD: {disc_name}")
+    
+    shutil.rmtree(wip_path, ignore_errors=True)
+    os.makedirs(wip_path, exist_ok=True)
+    os.makedirs(out_path, exist_ok=True)
     
     i_path_abs = drive
+    # Get number of the drive (eg. 0 for /dev/sr0, 1 for /dev/sr1, etc.)
+    drive_id = int(re.search(r'\d+', drive).group(0))
     o_path_abs = os.path.abspath(wip_path)
     
-    # Rip VIDEO_TS/VTS_0*_*.VOB to {wip_folder_path}/out.mp4
     cmd = [
-        "HandBrakeCLI",
-        "-i", f"{i_path_abs}",
-        "-o", f"{o_path_abs}",
-        "-e", "x264",
-        "-q", "20", # Video quality
-        "-B", "256" # Audio bitrate
+        "makemkvcon", "mkv",
+        f"disc:{drive_id}",
+        "all", f"{o_path_abs}"
     ]
     logging.debug(f"Executing: {' '.join(cmd)}")
     execute(cmd, capture=False)
     
-    # Move the file to the out folder
-    shutil.move(wip_path, out_path)
+    # For each file in the wip folder, reencode using ffmpeg to the out folder
+    for file in os.listdir(wip_dir_path):
+        file_no_ext = os.path.splitext(file)[0]
+        file_path = f"{wip_dir_path}/{file}"
+        out_file_path = f"{out_dir_path}/{file_no_ext}.mp4"
+        cmd = [
+            "ffmpeg",
+            "-i", file_path,
+            "-c:v", "libx264",
+            "-crf", "18",
+            "-map", "0",
+            "-c:a", "copy",
+            "-c:s", "copy",
+            out_file_path
+        ]
+        logging.debug(f"Executing: {' '.join(cmd)}")
+        execute(cmd, capture=False)
+    
+    # Remove the wip folder
+    shutil.rmtree(wip_path, ignore_errors=True)
 
 def cdparanoia_hash(cdp_str: str) -> int:
     lines = cdp_str.split('\n')[6:-2]
@@ -125,7 +154,7 @@ def rip_redbook(cdp_str: str, drive: str, out_root: str, wip_root: str):
         "abcde",
         "-d", drive,
         "-o", "flac",
-        "-B", "-x", "-N"
+        "-B", "-N"
     ]
     execute(cmd, capture=False)
     os.chdir(pwd)
@@ -181,7 +210,10 @@ def main_loop_step(
     dvd_path: str,
     redbook_path: str,
     iso_path: str,
-    bluray_path: str
+    bluray_path: str,
+    skip_eject: bool,
+    makemkv_update_key: bool,
+    makemkv_settings_path: Optional[str] = None
 ):
     blkid_str = None
     try:
@@ -198,14 +230,15 @@ def main_loop_step(
             cdp_text = execute(["cdparanoia", "-sQ"], capture=True)
             logging.info("Redbook disc detected")
             rip_redbook(cdp_text, drive, redbook_path, wip_path)
-            eject(drive)
+            if not skip_eject:
+                eject(drive)
         except subprocess.CalledProcessError as e:
             logging.debug("No disc detected")
         return
     
     logging.debug(f"blkid_str: {blkid_str}")
-    params = parse_blkid(blkid_str)[drive]
-    logging.debug(f"params: {params}")
+    blkid_params = parse_blkid(blkid_str)[drive]
+    logging.debug(f"params: {blkid_params}")
     
     mnt_path = f"./mnt{drive}"
     try:
@@ -215,23 +248,38 @@ def main_loop_step(
     
     # Check if "VIDEO_TS" exists
     if pathlib.Path(f"{mnt_path}/VIDEO_TS").exists():
-        rip_dvd(params, drive, wip_path, dvd_path)
+        rip_dvd(
+            blkid_params,
+            drive,
+            wip_path,
+            dvd_path,
+            makemkv_update_key,
+            makemkv_settings_path
+        )
     else:
-        rip_data_disc(params, drive, wip_path, iso_path)
+        rip_data_disc(blkid_params, drive, wip_path, iso_path)
     
-    eject(drive)
+    if not skip_eject:
+        eject(drive)
 
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--drive", default="/dev/sr0")
-    parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--wip-path", default="./wip")
-    parser.add_argument("--dvd-path", default="./dvd")
-    parser.add_argument("--redbook-path", default="./redbook")
-    parser.add_argument("--iso-path", default="./iso")
-    parser.add_argument("--bluray-path", default="./bluray")
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--drive", default="/dev/sr0", help="Path to the optical drive")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--wip-path", default="./wip", help="Path to store work-in-progress files")
+    parser.add_argument("--dvd-path", default="./dvd", help="Path to rip dvd discs to")
+    parser.add_argument("--redbook-path", default="./redbook", help="Path to rip redbook audio discs to")
+    parser.add_argument("--iso-path", default="./iso", help="Path to rip data discs to")
+    parser.add_argument("--bluray-path", default="./bluray", help="Path to rip bluray discs to")
+    parser.add_argument("--skip-eject", action="store_true", help="Don't eject the disc after ripping")
+    parser.add_argument("--makemkv-update-key", action="store_true", help="Automatically update free MakeMKV key")
+    parser.add_argument(
+        "--makemkv-settings-path",
+        help="Path to the MakeMKV settings file",
+        default="~/.MakeMKV/settings.conf"
+    )
     args = parser.parse_args()
     
     if args.debug:
@@ -245,7 +293,10 @@ if __name__ == "__main__":
                 args.dvd_path,
                 args.redbook_path,
                 args.iso_path,
-                args.bluray_path
+                args.bluray_path,
+                args.skip_eject,
+                args.makemkv_update_key,
+                args.makemkv_settings_path
             )
         except Exception as e:
             logging.debug("main_loop_step error: %s", e)
