@@ -8,6 +8,7 @@ import time
 import pathlib
 import shutil
 import os
+import atexit
 
 from makemkvkey import updateMakeMkvKey
 
@@ -66,7 +67,7 @@ def rip_dvd(
         makemkv_update_key: bool,
         makemkv_settings_path: Optional[str] = None
     ):
-    disc_name = f"{blkid_params['LABEL']}-{blkid_params['UUID']}.mp4"
+    disc_name = f"{blkid_params['LABEL']}-{blkid_params['UUID']}"
     wip_dir_path = f"{wip_root}/dvd"
     out_dir_path = out_root
     wip_path = f"{wip_dir_path}/{disc_name}"
@@ -200,9 +201,16 @@ def rip_bluray(blkid_params: dict):
 def eject(drive: str):
     execute(["sudo", "eject", "-F", drive])
     
+_mounts = []
 def mount(drive: str, mnt_path: str):
     os.makedirs(mnt_path, exist_ok=True)
     execute(["sudo", "mount", drive, mnt_path])
+    _mounts.append(mnt_path)
+
+@atexit.register
+def cleanup():
+    for mnt in _mounts:
+        execute(["sudo", "umount", mnt])
 
 def main_loop_step(
     drive: str,
@@ -282,6 +290,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     
+    logging.basicConfig(level=logging.INFO)
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
     

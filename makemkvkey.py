@@ -2,6 +2,7 @@
 
 from pyquery import PyQuery as pq
 import re
+import os
 
 MAKEMKV_KEY_URL = "https://forum.makemkv.com/forum/viewtopic.php?t=1053"
 
@@ -12,6 +13,8 @@ def getMakeMkvKey():
 
 def updateMakeMkvKey(settingsPath: str):
     key = getMakeMkvKey()
+    
+    settingsPath = os.path.expanduser(settingsPath)
     
     with open(settingsPath, "r") as settingsFile:
         settings = settingsFile.read()
