@@ -225,7 +225,8 @@ def transcode_file(file_path: str, out_path: str):
     
     os.makedirs(out_path, exist_ok=True)
     
-    file_no_ext = os.path.splitext(file_path)[0]
+    file_name = os.path.basename(file_path)
+    file_no_ext = os.path.splitext(file_name)[0]
     out_file_path = f"{out_path}/{file_no_ext}.mp4"
     cmd = [
         "ffmpeg",
