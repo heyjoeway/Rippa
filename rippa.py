@@ -204,7 +204,7 @@ def transcode_file(file_path: str, out_path: str):
         logging.debug(f"File {file_path} is less than 1MB")
         return
     
-    time.sleep(10)
+    time.sleep(30)
     size2 = os.path.getsize(file_path)
     logging.debug(f"size2: {size2}")
     if size1 != size2:
@@ -212,15 +212,16 @@ def transcode_file(file_path: str, out_path: str):
         return       
     
     # Check if file is done being written
-    try:
-        with open(file_path, "w") as f:
-            logging.debug(f"File {file_path} is not currently being written to")
-    except FileNotFoundError:
-        logging.debug(f"File {file_path} does not exist")
-        return
-    except Exception as e:
-        logging.debug(f"File {file_path} is currently being written to: {e}")
-        return
+    # TODO: This doesn't work? 
+    # try:
+    #     with open(file_path, "a") as f:
+    #         logging.debug(f"File {file_path} is not currently being written to")
+    # except FileNotFoundError:
+    #     logging.debug(f"File {file_path} does not exist")
+    #     return
+    # except Exception as e:
+    #     logging.debug(f"File {file_path} is currently being written to: {e}")
+    #     return
     
     os.makedirs(out_path, exist_ok=True)
     
