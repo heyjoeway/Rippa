@@ -186,25 +186,18 @@ def mount(drive: str, mnt_path: str):
     execute(["sudo", "mount", drive, mnt_path])
     _mounts.append(mnt_path)
 
+def unmount(mnt_path: str):
+    execute(["sudo", "umount", mnt_path])
+
 @atexit.register
-def cleanup():
+def mount_cleanup():
     for mnt in _mounts:
-        execute(["sudo", "umount", mnt])
+        unmount(mnt)
 
 def transcode_file(file_path: str, out_path: str):
-    # Check if file is done being written
-    try:
-        with open(file_path, "w") as f:
-            logging.debug(f"File {file_path} is done being written")
-    except FileNotFoundError:
-        logging.debug(f"File {file_path} does not exist")
-        return
-    except Exception as e:
-        logging.debug(f"File {file_path} is not done being written: {e}")
-        return
-    
     # Check if file size is changing
     size1 = os.path.getsize(file_path)
+    logging.debug(f"size1: {size1}")
     
     # Skip if less than 1MB
     if size1 < 1024 * 1024:
@@ -213,9 +206,21 @@ def transcode_file(file_path: str, out_path: str):
     
     time.sleep(10)
     size2 = os.path.getsize(file_path)
+    logging.debug(f"size2: {size2}")
     if size1 != size2:
         logging.debug(f"File {file_path} is not done being written (file size changed)")
         return       
+    
+    # Check if file is done being written
+    try:
+        with open(file_path, "w") as f:
+            logging.debug(f"File {file_path} is not currently being written to")
+    except FileNotFoundError:
+        logging.debug(f"File {file_path} does not exist")
+        return
+    except Exception as e:
+        logging.debug(f"File {file_path} is currently being written to: {e}")
+        return
     
     os.makedirs(out_path, exist_ok=True)
     
