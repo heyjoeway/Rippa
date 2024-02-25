@@ -203,6 +203,20 @@ def transcode_file(file_path: str, out_path: str):
         logging.debug(f"File {file_path} is not done being written: {e}")
         return
     
+    # Check if file size is changing
+    size1 = os.path.getsize(file_path)
+    
+    # Skip if less than 1MB
+    if size1 < 1024 * 1024:
+        logging.debug(f"File {file_path} is less than 1MB")
+        return
+    
+    time.sleep(10)
+    size2 = os.path.getsize(file_path)
+    if size1 != size2:
+        logging.debug(f"File {file_path} is not done being written (file size changed)")
+        return       
+    
     os.makedirs(out_path, exist_ok=True)
     
     file_no_ext = os.path.splitext(file_path)[0]
@@ -232,11 +246,17 @@ def transcode_disc(disc_name: str, wip_dvd_root: str, out_root: str):
 
     for file in files:
         file_path = f"{wip_path}/{file}"
-        transcode_file(file_path, out_path)
+        try:
+            transcode_file(file_path, out_path)
+        except Exception as e:
+            logging.debug(f"transcode_file error: {e}")
+            logging.debug(f"Maybe MakeMKV is still ripping the disc?")
 
 def transcode_loop_step(wip_root: str, out_root: str):
+    logging.debug("Transcode loop step")
     wip_dvd_root = f"{wip_root}/dvd"
     for disc_name in os.listdir(wip_dvd_root):
+        logging.debug(f"Transcoding disc: {disc_name}")
         transcode_disc(disc_name, wip_dvd_root, out_root)
 
 class StoppableThread(threading.Thread):
@@ -257,9 +277,9 @@ class TranscodeThread(StoppableThread):
         self.out_root = out_root
 
     def run(self):
-        while not self.stopped:
+        while not self.stopped():
             transcode_loop_step(self.wip_root, self.out_root)
-            time.sleep(2)
+            time.sleep(5)
 
 def main_loop_step(
     drive: str,
@@ -339,9 +359,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     
-    logging.basicConfig(level=logging.INFO)
-    if args.debug:
-        logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
     
     transcode_thread = TranscodeThread(args.wip_path, args.dvd_path)
     transcode_thread.start()
