@@ -9,6 +9,7 @@ import pathlib
 import shutil
 import os
 import atexit
+import threading
 
 from makemkvkey import updateMakeMkvKey
 
@@ -68,10 +69,8 @@ def rip_dvd(
         makemkv_settings_path: Optional[str] = None
     ):
     disc_name = f"{blkid_params['LABEL']}-{blkid_params['UUID']}"
-    wip_dir_path = f"{wip_root}/dvd"
-    out_dir_path = out_root
-    wip_path = f"{wip_dir_path}/{disc_name}"
-    out_path = f"{out_dir_path}/{disc_name}"
+    wip_path = f"{wip_root}/dvd/{disc_name}"
+    out_path = f"{out_root}/{disc_name}"
     
     # Check if output path exists
     if pathlib.Path(out_path).exists():
@@ -87,7 +86,6 @@ def rip_dvd(
     os.makedirs(wip_path, exist_ok=True)
     os.makedirs(out_path, exist_ok=True)
     
-    i_path_abs = drive
     # Get number of the drive (eg. 0 for /dev/sr0, 1 for /dev/sr1, etc.)
     drive_id = int(re.search(r'\d+', drive).group(0))
     o_path_abs = os.path.abspath(wip_path)
@@ -100,26 +98,7 @@ def rip_dvd(
     logging.debug(f"Executing: {' '.join(cmd)}")
     execute(cmd, capture=False)
     
-    # For each file in the wip folder, reencode using ffmpeg to the out folder
-    for file in os.listdir(wip_dir_path):
-        file_no_ext = os.path.splitext(file)[0]
-        file_path = f"{wip_dir_path}/{file}"
-        out_file_path = f"{out_dir_path}/{file_no_ext}.mp4"
-        cmd = [
-            "ffmpeg",
-            "-i", file_path,
-            "-c:v", "libx264",
-            "-crf", "18",
-            "-map", "0",
-            "-c:a", "copy",
-            "-c:s", "copy",
-            out_file_path
-        ]
-        logging.debug(f"Executing: {' '.join(cmd)}")
-        execute(cmd, capture=False)
-    
-    # Remove the wip folder
-    shutil.rmtree(wip_path, ignore_errors=True)
+    # Transcoding is handled in its own thread, so we're done here!
 
 def cdparanoia_hash(cdp_str: str) -> int:
     lines = cdp_str.split('\n')[6:-2]
@@ -212,6 +191,76 @@ def cleanup():
     for mnt in _mounts:
         execute(["sudo", "umount", mnt])
 
+def transcode_file(file_path: str, out_path: str):
+    # Check if file is done being written
+    try:
+        with open(file_path, "w") as f:
+            logging.debug(f"File {file_path} is done being written")
+    except FileNotFoundError:
+        logging.debug(f"File {file_path} does not exist")
+        return
+    except Exception as e:
+        logging.debug(f"File {file_path} is not done being written: {e}")
+        return
+    
+    os.makedirs(out_path, exist_ok=True)
+    
+    file_no_ext = os.path.splitext(file_path)[0]
+    out_file_path = f"{out_path}/{file_no_ext}.mp4"
+    cmd = [
+        "ffmpeg",
+        "-i", file_path,
+        "-c:v", "libx264",
+        "-crf", "18",
+        "-map", "0",
+        "-c:a", "copy",
+        "-c:s", "copy",
+        out_file_path
+    ]
+    logging.debug(f"Executing: {' '.join(cmd)}")
+    execute(cmd, capture=False)
+    
+    logging.debug(f"Removing file: {file_path}")
+    os.remove(file_path)
+
+def transcode_disc(disc_name: str, wip_dvd_root: str, out_root: str):
+    wip_path = f"{wip_dvd_root}/{disc_name}"
+    out_path = f"{out_root}/{disc_name}"
+    
+    files = os.listdir(wip_path)
+    logging.debug(f"Files: {files}")
+
+    for file in files:
+        file_path = f"{wip_path}/{file}"
+        transcode_file(file_path, out_path)
+
+def transcode_loop_step(wip_root: str, out_root: str):
+    wip_dvd_root = f"{wip_root}/dvd"
+    for disc_name in os.listdir(wip_dvd_root):
+        transcode_disc(disc_name, wip_dvd_root, out_root)
+
+class StoppableThread(threading.Thread):
+    def __init__(self):
+        super().__init__()
+        self._stop_event = threading.Event()
+
+    def stop(self):
+        self._stop_event.set()
+
+    def stopped(self):
+        return self._stop_event.is_set()
+
+class TranscodeThread(StoppableThread):
+    def __init__(self, wip_root, out_root):
+        super().__init__()
+        self.wip_root = wip_root
+        self.out_root = out_root
+
+    def run(self):
+        while not self.stopped:
+            transcode_loop_step(self.wip_root, self.out_root)
+            time.sleep(2)
+
 def main_loop_step(
     drive: str,
     wip_path: str,
@@ -294,6 +343,9 @@ if __name__ == "__main__":
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
     
+    transcode_thread = TranscodeThread(args.wip_path, args.dvd_path)
+    transcode_thread.start()
+    
     while True:
         try:
             main_loop_step(
@@ -310,3 +362,6 @@ if __name__ == "__main__":
         except Exception as e:
             logging.debug("main_loop_step error: %s", e)
         time.sleep(2)
+    
+    transcode_thread.stop()
+    transcode_thread.join()
